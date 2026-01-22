@@ -3,7 +3,7 @@ import { AnalysisResult, TradeDirection } from "../types";
 
 // 1. Vite/Vercel uses import.meta.env instead of process.env
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const ai = new GoogleGenAI({ apiKey: API_KEY });
+const ai = new GoogleGenAI({ apiKey: AIzaSyDn4rz_VlotkicpmLlj9PGvoA1Nr_4_pPY });
 
 // 2. 2026 Standard: Using Gemini 2.0 Flash for superior speed and JSON reliability
 const ANALYSIS_MODEL = "gemini-2.0-flash"; 

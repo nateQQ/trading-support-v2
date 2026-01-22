@@ -1,0 +1,5 @@
+{
+  "name": "TradeNexus AI",
+  "description": "Daily trading support application with dual-timeframe MACD analysis and market trend monitoring.",
+  "requestFramePermissions": []
+}

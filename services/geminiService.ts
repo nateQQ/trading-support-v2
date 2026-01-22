@@ -1,139 +1,291 @@
 import { GoogleGenAI, Type } from "@google/genai";
+
 import { AnalysisResult, TradeDirection } from "../types";
 
-// 1. Vite/Vercel uses import.meta.env instead of process.env
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const ai = new GoogleGenAI({ apiKey: AIzaSyDn4rz_VlotkicpmLlj9PGvoA1Nr_4_pPY });
 
-// 2. 2026 Standard: Using Gemini 2.0 Flash for superior speed and JSON reliability
-const ANALYSIS_MODEL = "gemini-2.0-flash"; 
+
+// Initialize Gemini API client
+
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+
+
+// Using gemini-3-flash-preview as it supports multimodal input (images), JSON schema output, and googleSearch grounding
+
+const ANALYSIS_MODEL = "gemini-3-flash-preview";
+
+
 
 /**
- * HELPER: Exponential Backoff Retry Wrapper
- * Automatically retries requests if a 429 (Rate Limit) error occurs.
+
+ * Converts a File object to a Base64 string.
+
  */
-async function fetchWithRetry<T>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> {
-  try {
-    return await fn();
-  } catch (error: any) {
-    const isRateLimit = error.message?.includes("429") || error.status === 429;
-    if (isRateLimit && retries > 0) {
-      console.warn(`Rate limit hit. Retrying in ${delay}ms... (${retries} retries left)`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return fetchWithRetry(fn, retries - 1, delay * 2); // Double the wait time
-    }
-    throw error;
-  }
-}
 
 const fileToGenerativePart = async (file: File): Promise<{ inlineData: { data: string; mimeType: string } }> => {
+
   return new Promise((resolve, reject) => {
+
     const reader = new FileReader();
+
     reader.onloadend = () => {
+
       const base64String = (reader.result as string).split(',')[1];
+
       resolve({
-        inlineData: { data: base64String, mimeType: file.type },
+
+        inlineData: {
+
+          data: base64String,
+
+          mimeType: file.type,
+
+        },
+
       });
+
     };
+
     reader.onerror = reject;
+
     reader.readAsDataURL(file);
+
   });
+
 };
+
+
 
 export const analyzeCharts = async (
+
   file15m: File,
+
   file1h: File,
+
   token: string
+
 ): Promise<AnalysisResult> => {
-  return fetchWithRetry(async () => {
+
+  try {
+
     const imagePart15m = await fileToGenerativePart(file15m);
+
     const imagePart1h = await fileToGenerativePart(file1h);
 
+
+
     const prompt = `
-      You are an expert crypto analyst. Analyze these two chart screenshots for ${token}. 
-      Image 1: 15m timeframe. Image 2: 1h timeframe.
+
+      You are an expert crypto technical analyst. 
+
+      Analyze these two chart screenshots for the token ${token}. 
+
+      Image 1 is the 15-minute timeframe. Image 2 is the 1-hour timeframe.
+
       
-      Focus: MACD (12, 26, 9) "Second Half Red Zone" (Receding red bars).
-      Rule: Recommend LONG if 1H trend confirms or 15m shows bullish momentum receding from red.
+
+      Focus specifically on the MACD (12, 26, 9) indicator.
+
       
-      Return valid JSON only.
+
+      **Trading Rules:**
+
+      1. Identify the current market trend (Up/Down/Sideways).
+
+      2. Check if the MACD is in the "Second Half Red Zone". This is defined as:
+
+         - The MACD histogram is negative (red).
+
+         - The histogram bars are receding (getting shorter/lighter color) indicating bearish momentum is fading and a bullish crossover might be approaching.
+
+      3. If the MACD enters this "Second Half Red Zone" on either timeframe (prioritize 1H for major trend, 15m for entry), recommend a LONG position.
+
+      4. If the MACD is clearly positive and expanding, the trend is up.
+
+      5. If the MACD is negative and expanding (dark red), the trend is strongly down (avoid long).
+
+
+
+      **Output Requirements:**
+
+      Provide a JSON object with the following fields:
+
+      - trend: A brief statement of the market trend.
+
+      - direction: "Long", "Short", or "Wait".
+
+      - entryPrice: Specific entry price suggestion based on the chart's current price action.
+
+      - targetPrice: A realistic target price based on recent resistance.
+
+      - pnlProjection: Estimated Profit/Loss ratio or percentage gain.
+
+      - rationale: A concise explanation referencing the MACD status on both 15m and 1h charts. Mention if there is a conflict.
+
+      - confidence: "High", "Medium", or "Low" based on image clarity and indicator alignment.
+
+
+
+      Return ONLY valid JSON.
+
     `;
 
-    const model = ai.getGenerativeModel({ model: ANALYSIS_MODEL });
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [imagePart15m, imagePart1h, { text: prompt }] }],
-      generationConfig: {
+
+
+    const response = await ai.models.generateContent({
+
+      model: ANALYSIS_MODEL,
+
+      contents: {
+
+        parts: [
+
+          imagePart15m, 
+
+          imagePart1h, 
+
+          { text: prompt }
+
+        ]
+
+      },
+
+      config: {
+
         responseMimeType: "application/json",
+
         responseSchema: {
+
           type: Type.OBJECT,
+
           properties: {
+
             trend: { type: Type.STRING },
+
             direction: { type: Type.STRING, enum: ["Long", "Short", "Wait"] },
+
             entryPrice: { type: Type.STRING },
+
             targetPrice: { type: Type.STRING },
+
             pnlProjection: { type: Type.STRING },
+
             rationale: { type: Type.STRING },
+
             confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] }
+
           },
+
           required: ["trend", "direction", "entryPrice", "targetPrice", "pnlProjection", "rationale", "confidence"]
+
         }
+
       }
+
     });
 
-    const data = JSON.parse(result.response.text());
-    
-    // Map direction to Enum
-    const directionMap: Record<string, TradeDirection> = {
-      "Long": TradeDirection.LONG,
-      "Short": TradeDirection.SHORT,
-      "Wait": TradeDirection.WAIT
-    };
 
-    return { ...data, direction: directionMap[data.direction] || TradeDirection.WAIT };
-  });
-};
 
-export interface SentimentAnalysis {
-  sentiment: 'Bullish' | 'Bearish' | 'Neutral';
-  summary: string;
-  sources: { title: string; uri: string }[];
-}
+    const text = response.text;
 
-export const fetchMarketSentiment = async (): Promise<SentimentAnalysis> => {
-  return fetchWithRetry(async () => {
-    const prompt = `Analyze current crypto market sentiment (Thuan Capital, CMC, CoinGecko). Determine if Bullish, Bearish, or Neutral.`;
+    if (!text) throw new Error("No response from Gemini");
 
-    const model = ai.getGenerativeModel({ model: ANALYSIS_MODEL });
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      tools: [{ googleSearch: {} } as any],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            sentiment: { type: Type.STRING, enum: ["Bullish", "Bearish", "Neutral"] },
-            summary: { type: Type.STRING }
-          },
-          required: ["sentiment", "summary"]
-        }
-      }
-    });
 
-    const responseData = JSON.parse(result.response.text());
-    const metadata = result.response.candidates?.[0]?.groundingMetadata;
-    
-    const sources = metadata?.groundingChunks
-      ?.filter((chunk: any) => chunk.web)
-      ?.map((chunk: any) => ({
-        title: chunk.web.title,
-        uri: chunk.web.uri
-      })) || [];
+
+    const result = JSON.parse(text);
+
+
+
+    // Map string direction to Enum
+
+    let directionEnum = TradeDirection.WAIT;
+
+    if (result.direction === 'Long') directionEnum = TradeDirection.LONG;
+
+    if (result.direction === 'Short') directionEnum = TradeDirection.SHORT;
+
+
 
     return {
-      sentiment: responseData.sentiment,
-      summary: responseData.summary,
-      sources: sources.slice(0, 5)
+
+      ...result,
+
+      direction: directionEnum,
+
     };
-  });
+
+
+
+  } catch (error) {
+
+    console.error("Gemini Analysis Failed:", error);
+
+    throw new Error("Failed to analyze charts. Please ensure images are clear.");
+
+  }
+
 };
+
+
+
+export interface SentimentAnalysis {
+
+  sentiment: 'Bullish' | 'Bearish' | 'Neutral';
+
+  summary: string;
+
+  sources: { title: string; uri: string }[];
+
+}
+
+
+
+export const fetchMarketSentiment = async (): Promise<SentimentAnalysis> => {
+
+  try {
+
+    const prompt = `
+
+      Search for and analyze the current crypto market sentiment as of today.
+
+      Specifically look for recent updates from:
+
+      1. Thuan Capital X (Twitter) channel (@ThuanCapital).
+
+      2. CoinMarketCap Fear & Greed Index and market news.
+
+      3. CoinGecko global market cap trends.
+
+      
+
+      Based on these, determine if the overall sentiment is "Bullish", "Bearish", or "Neutral".
+
+      Provide a brief 2-3 sentence summary of the findings.
+
+      
+
+      Format your response as a JSON object:
+
+      {
+
+        "sentiment": "Bullish" | "Bearish" | "Neutral",
+
+        "summary": "..."
+
+      }
+
+    `;
+
+
+
+    const response = await ai.models.generateContent({
+
+      model: ANALYSIS_MODEL,
+
+      contents: prompt,
+
+      config: {
+
+        tools: [{ googleSearch: {} }],
+
+        responseMimeType: "application/json",
